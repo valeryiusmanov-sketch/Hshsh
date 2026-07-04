@@ -1,157 +1,188 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
 import asyncio
+import logging
 import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message
 
-TOKEN = "8889337701:AAHCNgL6r2GCII_5wYaV8tsqCUBy_WL5ZY8"
+# ===== КОНФИГ =====
+TOKEN = "8664693238:AAGGTtyn8GMgQ5BlXFlHH6JOof3APCdGTfk"  # Твой токен
+ADMIN_ID = 8205534130  # Твой Telegram ID
+# ==================
 
-user_data = {}
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-# Фиктивный HTTP-сервер для Render
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'OK')
+# Хранилища
+muted_users = {}
+warns = {}
 
-def run_http_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-async def start(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
-    user_data[chat_id] = {
-        "warn_limit": 3,
-        "warn_count": 0,
-        "warn_msg_id": None,
-        "muted": False,
-        "active": True
-    }
-    keyboard = [[InlineKeyboardButton("Стоп", callback_data="stop")]]
-    await update.message.reply_text(
-        "@swill_controlbot управляет этим чатом [Стоп]",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-async def stop_bot(update: Update, context: CallbackContext):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat_id
-    if chat_id in user_data:
-        user_data[chat_id]["active"] = False
-    await query.edit_text("Бот отключён. Напишите /start для включения.")
-
-async def spam(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
-    if not user_data.get(chat_id, {}).get("active", True):
-        return
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("Использование: .spam <число> <текст>")
-        return
-    try:
-        count = int(args[0])
-        if count > 1000:
-            count = 1000
-        text = " ".join(args[1:])
-        for _ in range(count):
-            await update.message.reply_text(text)
-            await asyncio.sleep(0.05)
-    except ValueError:
-        await update.message.reply_text("Ошибка: число должно быть целым")
-
-async def warn(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
-    if not user_data.get(chat_id, {}).get("active", True):
-        return
-    args = context.args
-    if args and args[0].isdigit():
-        user_data[chat_id]["warn_limit"] = int(args[0])
-    user_data[chat_id]["warn_count"] = 0
-    if user_data[chat_id].get("warn_msg_id"):
-        try:
-            await context.bot.delete_message(chat_id, user_data[chat_id]["warn_msg_id"])
-        except:
-            pass
-    msg = await update.message.reply_text(f"🚫 Варн: 0/{user_data[chat_id]['warn_limit']}")
-    user_data[chat_id]["warn_msg_id"] = msg.message_id
-
-async def handle_message(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
-    if chat_id not in user_data or not user_data[chat_id].get("active", True):
-        return
-    data = user_data[chat_id]
-    if update.message.text and update.message.text.startswith("."):
-        return
-    if data.get("muted", False):
-        try:
-            await context.bot.delete_message(chat_id, update.message.message_id)
-        except:
-            pass
-        return
-    data["warn_count"] += 1
-    limit = data["warn_limit"]
-    if data["warn_count"] > limit:
-        data["warn_count"] = limit
-    if data.get("warn_msg_id"):
-        try:
-            await context.bot.edit_message_text(
-                f"🚫 Варн: {data['warn_count']}/{limit}",
-                chat_id=chat_id,
-                message_id=data["warn_msg_id"]
-            )
-        except:
-            pass
-    if data["warn_count"] >= limit:
-        data["muted"] = True
-        await update.message.reply_text("🔇 Мут активирован (3/3)")
-
-async def mute(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
-    if chat_id in user_data:
-        user_data[chat_id]["muted"] = True
-        await update.message.reply_text("🔇 Мут включён")
-
-async def unmute(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
-    if chat_id in user_data:
-        user_data[chat_id]["muted"] = False
-        await update.message.reply_text("🔊 Мут выключен")
-
-async def clear(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
-    if chat_id in user_data:
-        user_data[chat_id]["warn_count"] = 0
-        if user_data[chat_id].get("warn_msg_id"):
-            try:
-                await context.bot.edit_message_text(
-                    f"🚫 Варн: 0/{user_data[chat_id]['warn_limit']}",
-                    chat_id=chat_id,
-                    message_id=user_data[chat_id]["warn_msg_id"]
-                )
-            except:
-                pass
-        await update.message.reply_text("Варны сброшены")
-
-def main():
-    # Запускаем HTTP-сервер для Render
-    run_http_server()
+@dp.message(F.text & F.chat.type == "private")
+async def handle_private_messages(message: Message):
+    chat_id = message.chat.id
+    text = message.text
     
-    # Запускаем бота
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(stop_bot, pattern="stop"))
-    app.add_handler(CommandHandler("spam", spam))
-    app.add_handler(CommandHandler("warn", warn))
-    app.add_handler(CommandHandler("mute", mute))
-    app.add_handler(CommandHandler("unmute", unmute))
-    app.add_handler(CommandHandler("clear", clear))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_polling()
+    # ===== .mute N =====
+    if text.startswith(".mute "):
+        try:
+            minutes = int(text.split()[1])
+            if minutes < 1 or minutes > 1440:
+                await message.answer("❌ От 1 до 1440 минут")
+                return
+        except:
+            await message.answer("❌ Использование: .mute 10")
+            return
+        
+        try:
+            chat = await bot.get_chat(chat_id)
+            if chat_id not in muted_users:
+                muted_users[chat_id] = {}
+            muted_users[chat_id][chat_id] = datetime.now() + timedelta(minutes=minutes)
+            
+            await message.answer(f"✅ {chat.first_name} замучен на {minutes} мин.")
+            await bot.send_message(ADMIN_ID, f"🔇 Мут {chat.first_name} на {minutes} мин.")
+            asyncio.create_task(auto_unmute(chat_id, chat_id, minutes))
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}")
+        return
+    
+    # ===== .unmute =====
+    elif text == ".unmute":
+        chat_id = message.chat.id
+        if chat_id in muted_users and chat_id in muted_users[chat_id]:
+            del muted_users[chat_id][chat_id]
+            chat = await bot.get_chat(chat_id)
+            await message.answer(f"✅ Мут снят с {chat.first_name}")
+            await bot.send_message(ADMIN_ID, f"🔊 Мут снят с {chat.first_name}")
+        else:
+            await message.answer("ℹ️ Пользователь не в муте")
+        return
+    
+    # ===== .help =====
+    elif text == ".help":
+        await message.answer(
+            "👋 RootExe — автоматизация личных чатов\n\n"
+            ".mute N — мут на N минут\n"
+            ".unmute — снять мут\n"
+            ".spam текст N — спам (до 30)\n"
+            ".txt текст — анимация\n"
+            ".info — данные собеседника\n"
+            ".warn N — предупреждение (мут после N)\n"
+            ".unwarn — снять варн\n"
+            ".help — это меню"
+        )
+        return
+    
+    # ===== .info =====
+    elif text == ".info":
+        chat = await bot.get_chat(chat_id)
+        await message.answer(
+            f"👤 {chat.first_name or 'Нет имени'}\n"
+            f"🆔 {chat.id}\n"
+            f"👀 @{chat.username or 'нет'}"
+        )
+        return
+    
+    # ===== .spam текст N =====
+    elif text.startswith(".spam "):
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            await message.answer("❌ Использование: .spam Привет 5")
+            return
+        try:
+            count = int(parts[2])
+            if count > 30:
+                count = 30
+                await message.answer("⚠️ Ограничено до 30")
+        except:
+            count = 5
+        spam_text = parts[1]
+        for i in range(count):
+            await message.answer(spam_text)
+            await asyncio.sleep(0.3)
+        return
+    
+    # ===== .txt текст =====
+    elif text.startswith(".txt "):
+        anim_text = text.replace(".txt ", "").strip()
+        if not anim_text:
+            await message.answer("❌ Напиши текст")
+            return
+        for char in anim_text:
+            await message.answer(char)
+            await asyncio.sleep(0.5)
+        return
+    
+    # ===== .warn N =====
+    elif text.startswith(".warn "):
+        try:
+            limit = int(text.split()[1])
+            if limit < 1:
+                await message.answer("❌ Лимит > 0")
+                return
+        except:
+            limit = 3
+        
+        user_id = chat_id
+        warns[user_id] = warns.get(user_id, 0) + 1
+        current_warns = warns[user_id]
+        
+        chat = await bot.get_chat(user_id)
+        await message.answer(f"⚠️ {chat.first_name} получил варн ({current_warns}/{limit})")
+        
+        if current_warns >= limit:
+            if user_id not in muted_users:
+                muted_users[user_id] = {}
+            muted_users[user_id][user_id] = datetime.now() + timedelta(hours=24)
+            await message.answer(f"🚫 {chat.first_name} замучен на 24 часа")
+            await bot.send_message(ADMIN_ID, f"🚫 Автомут {chat.first_name} за {limit} варнов")
+            asyncio.create_task(auto_unmute(user_id, user_id, 1440))
+        return
+    
+    # ===== .unwarn =====
+    elif text == ".unwarn":
+        user_id = chat_id
+        if user_id in warns and warns[user_id] > 0:
+            warns[user_id] -= 1
+            chat = await bot.get_chat(user_id)
+            await message.answer(f"✅ Варн снят. Осталось: {warns[user_id]}")
+        else:
+            await message.answer("ℹ️ Нет варнов")
+        return
+    
+    # ===== ФИЛЬТР УДАЛЕНИЯ =====
+    # Если сообщение от собеседника (не от бота) и он в муте
+    if message.from_user.id != bot.id:
+        user_id = message.from_user.id
+        if chat_id in muted_users and user_id in muted_users[chat_id]:
+            try:
+                await bot.delete_message(chat_id, message.message_id)
+                await bot.send_message(
+                    chat_id,
+                    f"🗑️ Сообщение удалено (мут активен)"
+                )
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🗑️ Удалено: {message.text[:50]} от {message.from_user.first_name}"
+                )
+            except Exception as e:
+                print(f"Ошибка удаления: {e}")
+
+async def auto_unmute(chat_id: int, user_id: int, minutes: int):
+    """Автоснятие мута"""
+    await asyncio.sleep(minutes * 60)
+    if chat_id in muted_users and user_id in muted_users[chat_id]:
+        del muted_users[chat_id][user_id]
+        try:
+            chat = await bot.get_chat(chat_id)
+            await bot.send_message(chat_id, f"🔓 Мут снят с {chat.first_name}")
+        except:
+            pass
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    print("🤖 Бот запущен! Жду команд...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
