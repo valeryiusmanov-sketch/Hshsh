@@ -1,10 +1,25 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
 import asyncio
+import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 TOKEN = "8889337701:AAHCNgL6r2GCII_5wYaV8tsqCUBy_WL5ZY8"
 
 user_data = {}
+
+# Фиктивный HTTP-сервер для Render
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'OK')
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
 
 async def start(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
@@ -122,6 +137,11 @@ async def clear(update: Update, context: CallbackContext):
         await update.message.reply_text("Варны сброшены")
 
 def main():
+    # Запускаем HTTP-сервер для Render
+    import threading
+    run_http_server()
+    
+    # Запускаем бота
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(stop_bot, pattern="stop"))
