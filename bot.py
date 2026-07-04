@@ -2,6 +2,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
 import asyncio
 import os
+import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 TOKEN = "8889337701:AAHCNgL6r2GCII_5wYaV8tsqCUBy_WL5ZY8"
@@ -138,7 +139,6 @@ async def clear(update: Update, context: CallbackContext):
 
 def main():
     # Запускаем HTTP-сервер для Render
-    import threading
     run_http_server()
     
     # Запускаем бота
